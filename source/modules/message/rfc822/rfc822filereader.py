@@ -15,7 +15,14 @@
 # This is the module for handling rfc822 email types
 
 # Do not change from CamelCase because these are the official header names
-# TABLE: Delivered_To:LONGTEXT, Original_Recipient:LONGTEXT, Received:LONGTEXT, Return_Path:LONGTEXT, Received_SPF:LONGTEXT, Authentication_Results:LONGTEXT, DKIM_Signature:LONGTEXT, DomainKey_Signature:LONGTEXT, Organization:LONGTEXT, MIME_Version:DOUBLE, List_Unsubscribe:LONGTEXT, X_Received:LONGTEXT, X_Priority:LONGTEXT, X_MSMail_Priority:LONGTEXT, X_Mailer:LONGTEXT, X_MimeOLE:LONGTEXT, X_Notifications:LONGTEXT, X_Notification_ID:LONGTEXT, X_Sender_ID:LONGTEXT, X_Notification_Category:LONGTEXT, X_Notification_Type:LONGTEXT, X_UB:INT, Precedence:LONGTEXT, Reply_To:LONGTEXT, Auto_Submitted:LONGTEXT, Message_ID:LONGTEXT, Date:DATE, Subject:LONGTEXT, From:LONGTEXT, To:LONGTEXT, Content_Type:LONGTEXT, XTo:LONGTEXT, Xcc:LONGTEXT, Xbcc:LONGTEXT, Cc:LONGTEXT, Bcc:LONGTEXT, content:LONGTEXT, Attachments:LONGTEXT
+# TABLE: Delivered_To:LONGTEXT, Original_Recipient:LONGTEXT, Received:LONGTEXT, Return_Path:LONGTEXT, Received_SPF:LONGTEXT, Authentication_Results:LONGTEXT, DKIM_Signature:LONGTEXT, DomainKey_Signature:LONGTEXT, Organization:LONGTEXT, MIME_Version:DOUBLE, List_Unsubscribe:LONGTEXT, X_Received:LONGTEXT, X_Priority:LONGTEXT, X_MSMail_Priority:LONGTEXT, X_Mailer:LONGTEXT, X_MimeOLE:LONGTEXT, X_Notifications:LONGTEXT, X_Notification_ID:LONGTEXT, X_Sender_ID:LONGTEXT, X_Notification_Category:LONGTEXT, X_Notification_Type:LONGTEXT, X_UB:INT, Precedence:LONGTEXT, Reply_To:LONGTEXT, Auto_Submitted:LONGTEXT, Message_ID:LONGTEXT, Date:DATE, Subject:LONGTEXT, From:LONGTEXT, To:LONGTEXT, Content_Type:LONGTEXT, XTo:LONGTEXT, Xcc:LONGTEXT, Xbcc:LONGTEXT, Cc:LONGTEXT, Bcc:LONGTEXT, content:LONGTEXT, Attachments:LONGTEXT, SpamScore:DOUBLE, SpamReport:LONGTEXT, isSpam:bool
+
+#Configuration for the SpamAssassin
+SPAMD_HOST = '127.0.0.1'
+SPAMD_PORT = 783
+SPAMD_USER = 'spamd'
+SPAMD_SPAMSCORELIMIT = 1.0
+SPAMD_DOSPAMCHECK = True
 
 import os
 import sys
@@ -25,6 +32,7 @@ import pyzmail
 import recursive
 import tempfile
 import python_dateutil.dateutil.parser as date_parser
+import socket
 
 def process(file, config, rcontext, columns=None):
         fullpath = file.fullpath
@@ -106,6 +114,81 @@ def process(file, config, rcontext, columns=None):
             assorted.append(email_file.read())
 
             assorted.append(','.join(attachments))
+
+            #SPAMCHECK
+            if SPAMD_DOSPAMCHECK:
+                email_file_temp = email_file
+                email_file_temp.seek(0)
+                email_use = email_file_temp.read()
+
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    print "socket created"
+                    sock.connect((SPAMD_HOST, SPAMD_PORT))
+                    print "socket connected"
+
+                    output = []
+
+                    output.append('REPORT SPAMC/1.2')
+                    output.append('Content-length: %d' % len(email_use))
+                    output.append('User: %s' % SPAMD_USER)
+                    output.append('')
+                    output.append(email_use)
+
+                    data = '\r\n'.join(output)
+                    del output[:]
+                    sock.sendall(data);
+                    print 'data sent'
+
+                    fd = sock.makefile('rb', 0)
+
+                    spamd_header = fd.readline()
+                    if spamd_header.find('EX_OK') == -1:
+                        raise Exception
+
+                    spamd_score = fd.readline()
+                    spamd_score_splitted = spamd_score.split(";")[1].split("/")[0].strip()
+
+                    saveReport = False
+                    report = ''
+                    for line in fd.readlines():
+                        if saveReport:
+                            report += line
+
+                        if line.startswith('----'):
+                            saveReport = True
+
+                    assorted.append(spamd_score_splitted)
+                    assorted.append(report)
+
+                    #print '!!!'
+                    #print spamd_score_splitted
+                    #print '!!!'
+                    #print SPAMD_SPAMSCORELIMIT
+                    #print '!!!'
+
+                    if float(spamd_score_splitted) > SPAMD_SPAMSCORELIMIT:
+                        assorted.append(1)
+                    else:
+                        assorted.append(0)
+
+                    #print '---2!!!---'
+                    #print spamd_header
+                    #print spamd_score
+                    #print '---!!2--'
+                    #print spamd_score_splitted
+                    #print '---2!!!---'
+
+                    sock.close
+                    #print "socket closed"
+                except Exception:
+                    print 'SpamCheck error'
+                    traceback.print_exc(file=sys.stderr)
+            else:
+                assorted.append(None);
+                assorted.append(None);
+                assorted.append(0);
+            #SPAMCHECK
 
             # Make sure we stored exactly the same amount of columns as
             # specified!!
